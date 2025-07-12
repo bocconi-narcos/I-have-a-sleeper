@@ -1,0 +1,8 @@
+# Minimal requirements for world model training
+# These are the essential packages needed to run the training script
+
+torch>=2.0.0
+torchvision>=0.15.0
+numpy>=1.21.0
+h5py>=3.7.0
+PyYAML>=6.0 
