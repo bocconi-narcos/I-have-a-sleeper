@@ -1,0 +1,106 @@
+# World Model Training Configuration
+
+# Output directory for checkpoints and logs
+output_dir: "outputs/world_model_training"
+
+# Model configuration
+model:
+  # Grid/image dimensions
+  image_size: [30, 30]  # Maximum grid size (H, W)
+  input_channels: 1     # Number of input channels (1 for ARC grids)
+  
+  # Latent dimensions
+  latent_dim_state: 128   # Dimension of state embeddings (x)
+  latent_dim_action: 64   # Dimension of action embeddings (e)
+  
+  # Number of discrete actions
+  num_actions: 8  # Adjust based on your action space
+  
+  # Model architecture parameters
+  action_encoder_type: "embedding"  # "embedding" or "onehot_mlp"
+  transition_hidden_dim: 256
+  action_decoder_hidden_dims: [512, 256]
+  dropout: 0.1
+  
+  # State encoder specific parameters
+  encoder_params:
+    depth: 4              # Number of transformer layers
+    heads: 8              # Number of attention heads
+    mlp_dim: 512          # MLP dimension in transformer
+    transformer_dim: 64   # Transformer embedding dimension
+    dropout: 0.2
+    emb_dropout: 0.1
+    colors_vocab_size: 11 # Number of colors in ARC (0-10)
+    scaled_position_embeddings: false
+
+# Data configuration
+data:
+  # Path to replay buffer file
+  buffer_path: "data/replay_buffer.pt"  # Change to your actual data path
+  
+  # Data format parameters
+  state_shape: [1, 30, 30]  # Shape of state tensors (C, H, W)
+  mode: "color_only"        # Training mode: "color_only", "selection_color", "end_to_end"
+  
+  # Data splitting
+  train_split: 0.8  # Fraction of data for training
+  
+  # Data loading parameters
+  num_workers: 4
+  num_samples: null  # Set to an integer to limit dataset size for testing
+
+# Training configuration
+training:
+  # Training hyperparameters
+  batch_size: 32
+  num_epochs: 100
+  learning_rate: 1e-4
+  weight_decay: 1e-4
+  
+  # Loss configuration
+  loss_type: "categorical"      # "categorical" or "mse"
+  action_loss_weight: 1.0       # Alpha weight for action reconstruction loss
+  
+  # Regularization
+  grad_clip: 1.0  # Gradient clipping threshold (0 to disable)
+  
+  # Learning rate scheduler
+  use_scheduler: true
+  scheduler_step_size: 20   # Epochs between LR reduction
+  scheduler_gamma: 0.5      # LR multiplication factor
+  
+  # Logging and checkpointing
+  log_interval: 50          # Batches between progress logs
+  save_interval: 10         # Epochs between checkpoints
+
+# Alternative configurations for different scenarios
+# You can uncomment and modify these sections as needed
+
+# # Configuration for larger models
+# model_large:
+#   latent_dim_state: 256
+#   latent_dim_action: 128
+#   transition_hidden_dim: 512
+#   action_decoder_hidden_dims: [1024, 512, 256]
+#   encoder_params:
+#     depth: 6
+#     heads: 12
+#     mlp_dim: 1024
+#     transformer_dim: 128
+
+# # Configuration for faster training (smaller models)
+# model_fast:
+#   latent_dim_state: 64
+#   latent_dim_action: 32
+#   transition_hidden_dim: 128
+#   action_decoder_hidden_dims: [256]
+#   encoder_params:
+#     depth: 2
+#     heads: 4
+#     mlp_dim: 256
+#     transformer_dim: 32
+
+# # Configuration for continuous actions
+# training_continuous:
+#   loss_type: "mse"
+#   action_loss_weight: 0.1 

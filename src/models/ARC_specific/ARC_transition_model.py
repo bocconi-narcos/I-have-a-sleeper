@@ -5,15 +5,12 @@ from typing import Tuple
 from src.utils.weight_init import initialize_weights
 
 
-class TransitionModel(nn.Module):
+class ARC_TransitionModel(nn.Module):
     """
     TransitionModel for discrete-MDP world-model.
     
     Predicts the distribution over next state embeddings x_{t+1} given (x_t, e_t),
     approximating P(s_{t+1} | s_t, a_t) ≈ T(x_t, e_t).
-    
-    Architecture follows Eq. (3) from the paper and is trained with negative log-likelihood
-    loss of Eq. (5).
     
     Args:
         state_dim (int): Dimension of state embeddings x_t (should match latent_dim from StateEncoder/StateDecoder)
