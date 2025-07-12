@@ -34,7 +34,7 @@ from src.models.ARC_specific.ARC_action_decoder import ARC_ActionDecoder
 from src.data.replay_buffer_dataset import ReplayBufferDataset
 
 
-class WorldModelTrainer:
+class Generative_WorldModelTrainer:
     """
     Trainer class for supervised world model training.
     """

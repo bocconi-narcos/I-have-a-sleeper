@@ -1,0 +1,152 @@
+# JEPA World Model Training Configuration
+# This config is specifically designed for the simplified JEPA-style world model trainer
+
+# =============================================================================
+# MODEL CONFIGURATION
+# =============================================================================
+model:
+  # Image/State dimensions
+  image_size: [30, 30]  # Height, Width of the grid
+  input_channels: 1     # Single channel for ARC grids
+  
+  # Latent dimensions
+  latent_dim_state: 128   # Dimension of state embeddings
+  latent_dim_action: 64   # Dimension of action embeddings
+  
+  # Action space
+  num_actions: 2484         # Number of possible actions
+  action_encoder_type: 'embedding'  # Options: 'embedding', 'mlp'
+  
+  # State encoder parameters
+  encoder_params:
+    encoder_type: 'vision_transformer'  # Options: 'vision_transformer', 'cnn'
+    patch_size: 2
+    embed_dim: 128
+    depth: 6
+    heads: 8
+    mlp_dim: 256
+    dropout: 0.1
+    emb_dropout: 0.1
+    
+  # Transition model parameters (transformer-based)
+  transition_depth: 4         # Number of transformer layers
+  transition_heads: 8         # Number of attention heads
+  transition_dim_head: 64     # Dimension per attention head
+  transition_mlp_dim: 256     # MLP hidden dimension in transformer
+  
+  # Regularization
+  dropout: 0.1
+
+# =============================================================================
+# TRAINING CONFIGURATION
+# =============================================================================
+training:
+  # Training hyperparameters
+  batch_size: 32
+  num_epochs: 100
+  learning_rate: 0.0001
+  weight_decay: 0.0001
+  
+  # EMA parameters (crucial for JEPA to prevent collapse)
+  ema_decay: 0.995          # Exponential moving average decay rate
+  
+  # Logging and monitoring
+  log_interval: 10          # Log every N batches
+  
+  # Early stopping
+  patience: 15              # Stop if no improvement for N epochs
+  
+  # Optional learning rate scheduling
+  use_scheduler: false
+  scheduler_step_size: 20
+  scheduler_gamma: 0.5
+
+# =============================================================================
+# DATA CONFIGURATION
+# =============================================================================
+data:
+  # Dataset paths
+  buffer_path: 'data/rb_challenge_joint_1000010_default.pt'
+  
+  # Data preprocessing
+  state_shape: [1, 30, 30]   # [channels, height, width]
+  mode: 'color_only'         # Dataset mode
+  num_samples: null          # Use all samples if null
+  
+  # Data loading
+  num_workers: 4
+  train_split: 0.8          # 80% for training, 20% for validation
+  
+  # Data augmentation (optional)
+  augment_data: false
+  augmentation_params:
+    rotation_prob: 0.1
+    flip_prob: 0.1
+
+# =============================================================================
+# EXPERIMENT CONFIGURATION
+# =============================================================================
+experiment:
+  # Experiment tracking
+  project_name: 'jepa-world-model'
+  experiment_name: 'jepa_arc_baseline'
+  
+  # Output paths
+  output_dir: 'outputs/jepa_training'
+  checkpoint_dir: 'outputs/jepa_training/checkpoints'
+  log_dir: 'outputs/jepa_training/logs'
+  
+  # Checkpointing
+  save_every_n_epochs: 10
+  save_best_only: true
+
+# =============================================================================
+# EVALUATION CONFIGURATION
+# =============================================================================
+evaluation:
+  # Validation frequency
+  validate_every_n_epochs: 1
+  
+  # Metrics to track
+  track_cosine_similarity: true
+  track_embedding_norm: true
+  
+  # Evaluation batch size (can be larger than training batch)
+  eval_batch_size: 64
+
+# =============================================================================
+# HARDWARE CONFIGURATION
+# =============================================================================
+hardware:
+  # Device preferences (auto-detected in code)
+  prefer_mps: true      # Use Apple Silicon GPU if available
+  prefer_cuda: true     # Use CUDA if available
+  
+  # Memory optimization
+  pin_memory: true
+  gradient_checkpointing: false
+  
+  # Gradient clipping
+  max_grad_norm: 1.0
+
+# =============================================================================
+# ARCHITECTURE NOTES
+# =============================================================================
+# JEPA Architecture Overview:
+# 1. State Encoder: φ(s) → z_s (encodes current state)
+# 2. Target Encoder: φ_target(s') → z_s' (EMA of state encoder, encodes next state)
+# 3. Action Encoder: g(a) → z_a (encodes action)
+# 4. Transition Model: T(z_s, z_a) → ẑ_s' (predicts next state embedding)
+# 
+# Loss: MSE(ẑ_s', z_s') - between predicted and actual next state embeddings
+# 
+# Key Benefits:
+# - Avoids pixel-level reconstruction
+# - Learns abstract representations
+# - EMA prevents representation collapse
+# - Computationally efficient
+# 
+# Critical Parameters:
+# - ema_decay: Controls stability of target encoder (0.995 is standard)
+# - latent_dim_state: Balance between expressiveness and efficiency
+# - transition_depth: Capacity of the prediction model 
