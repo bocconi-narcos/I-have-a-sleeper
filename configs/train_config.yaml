@@ -18,9 +18,14 @@ model:
   
   # Model architecture parameters
   action_encoder_type: "embedding"  # "embedding" or "onehot_mlp"
-  transition_hidden_dim: 256
   action_decoder_hidden_dims: [512, 256]
   dropout: 0.1
+  
+  # Transition model (transformer) parameters
+  transition_depth: 2           # Number of transformer layers
+  transition_heads: 4           # Number of attention heads  
+  transition_dim_head: 64       # Dimension per attention head
+  transition_mlp_dim: 256       # MLP dimension in transformer
   
   # State encoder specific parameters
   encoder_params:
@@ -69,8 +74,6 @@ training:
   # Loss configuration
   loss_type: "categorical"      # "categorical" or "mse"
   action_loss_weight: 1.0       # Alpha weight for action reconstruction loss
-  state_reconstruction_loss_weight: 1.0  # Beta weight for state reconstruction loss
-  embedding_transition_loss_weight: 0.1  # Gamma weight for embedding transition loss
   
   # Regularization
   grad_clip: 1.0  # Gradient clipping threshold (0 to disable)
@@ -103,8 +106,11 @@ training:
 model_fast:
   latent_dim_state: 64
   latent_dim_action: 32
-  transition_hidden_dim: 128
   action_decoder_hidden_dims: [256]
+  transition_depth: 2
+  transition_heads: 2
+  transition_dim_head: 32
+  transition_mlp_dim: 128
   encoder_params:
     depth: 2
     heads: 4

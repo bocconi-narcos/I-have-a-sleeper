@@ -1,171 +1,93 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from typing import Tuple
 from src.utils.weight_init import initialize_weights
+from src.models.base.transformer_blocks import PreNorm, FeedForward, Attention, Transformer
 
 
 class ARC_TransitionModel(nn.Module):
     """
-    TransitionModel for discrete-MDP world-model.
+    Transformer-based predictor for the next latent state (x_{t+1}).
     
-    Predicts the distribution over next state embeddings x_{t+1} given (x_t, e_t),
-    approximating P(s_{t+1} | s_t, a_t) ≈ T(x_t, e_t).
-    
-    For training, use predict() method to get deterministic predictions that can be 
-    fed to the state decoder for reconstruction loss.
-    
-    Args:
-        state_dim (int): Dimension of state embeddings x_t (should match latent_dim from StateEncoder/StateDecoder)
-        action_dim (int): Dimension of action embeddings e_t (should match embedding_dim from ActionEncoder)
-        hidden_dim (int): Hidden layer dimension. Defaults to 256.
-        dropout (float): Dropout rate. Defaults to 0.0.
+    Inputs:
+        - encoded_state: Tensor of shape (batch_size, state_dim)
+        - encoded_action: Tensor of shape (batch_size, action_dim)
+    Output:
+        - predicted_next_latent: Tensor of shape (batch_size, latent_dim)
     """
     
-    def __init__(self, 
-                 state_dim: int, 
-                 action_dim: int, 
-                 hidden_dim: int = 256,
-                 dropout: float = 0.0):
+    def __init__(self, state_dim: int, action_dim: int, latent_dim: int = None,
+                 transformer_depth: int = 2, transformer_heads: int = 2, 
+                 transformer_dim_head: int = 64, transformer_mlp_dim: int = 128, 
+                 dropout: float = 0.1):
         super().__init__()
         
         self.state_dim = state_dim
         self.action_dim = action_dim
-        self.hidden_dim = hidden_dim
-        self.dropout = dropout
-        
-        input_dim = state_dim + action_dim
-        
-        # Two hidden layers with ReLU activation as specified
-        self.network = nn.Sequential(
-            nn.Linear(input_dim, hidden_dim),
-            nn.ReLU(),
-            nn.Dropout(dropout),
-            nn.Linear(hidden_dim, hidden_dim),
-            nn.ReLU(),
-            nn.Dropout(dropout)
+        self.latent_dim = latent_dim or state_dim  # output dim
+
+        # Project both inputs to the same dimension if needed
+        self.state_proj = nn.Linear(state_dim, self.latent_dim) if state_dim != self.latent_dim else nn.Identity()
+        self.action_proj = nn.Linear(action_dim, self.latent_dim)
+
+        # Positional encoding for sequence of length 2 (state + action)
+        self.pos_embed = nn.Parameter(torch.zeros(1, 2, self.latent_dim))
+
+        self.transformer = Transformer(
+            dim=self.latent_dim,
+            depth=transformer_depth,
+            heads=transformer_heads,
+            dim_head=transformer_dim_head,
+            mlp_dim=transformer_mlp_dim,
+            dropout=dropout
         )
         
-        # Output layers for Gaussian distribution parameters
-        self.mu_head = nn.Linear(hidden_dim, state_dim)
-        self.logvar_head = nn.Linear(hidden_dim, state_dim)
+        self.output_proj = nn.Linear(self.latent_dim, self.latent_dim)
         
         # Apply weight initialization
         self.apply(initialize_weights)
+        nn.init.normal_(self.pos_embed, std=0.02)
         
-        # Print model statistics
+        # Print model info
         num_params = sum(p.numel() for p in self.parameters())
         print(f"[TransitionModel] Number of parameters: {num_params}")
-    
-    def forward(self, x_t: torch.Tensor, e_t: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+
+    def forward(self, encoded_state: torch.Tensor, encoded_action: torch.Tensor) -> torch.Tensor:
         """
-        Forward pass for the TransitionModel.
+        Predict next state embedding given current state and action embeddings.
         
         Args:
-            x_t (torch.Tensor): Current state embeddings of shape (B, state_dim)
-            e_t (torch.Tensor): Action embeddings of shape (B, action_dim)
+            encoded_state (torch.Tensor): Current state embedding of shape (B, state_dim)
+            encoded_action (torch.Tensor): Action embedding of shape (B, action_dim)
             
         Returns:
-            Tuple[torch.Tensor, torch.Tensor]: mu and logvar of q(x_{t+1} | x_t, e_t)
-                - mu: shape (B, state_dim)
-                - logvar: shape (B, state_dim)
+            torch.Tensor: Predicted next state embedding of shape (B, latent_dim)
         """
         # Validate input dimensions
-        if x_t.shape[-1] != self.state_dim:
+        if encoded_state.shape[-1] != self.state_dim:
             raise ValueError(f"Expected state embedding dimension {self.state_dim}, "
-                           f"got {x_t.shape[-1]}")
-        if e_t.shape[-1] != self.action_dim:
+                           f"got {encoded_state.shape[-1]}")
+        if encoded_action.shape[-1] != self.action_dim:
             raise ValueError(f"Expected action embedding dimension {self.action_dim}, "
-                           f"got {e_t.shape[-1]}")
-        if x_t.shape[0] != e_t.shape[0]:
-            raise ValueError(f"Batch size mismatch: state {x_t.shape[0]}, action {e_t.shape[0]}")
+                           f"got {encoded_action.shape[-1]}")
+        if encoded_state.shape[0] != encoded_action.shape[0]:
+            raise ValueError(f"Batch size mismatch: state {encoded_state.shape[0]}, "
+                           f"action {encoded_action.shape[0]}")
         
-        # Concatenate state and action embeddings
-        x_concat = torch.cat([x_t, e_t], dim=-1)
+        # Project to common dimension
+        state_proj = self.state_proj(encoded_state)   # (B, latent_dim)
+        action_proj = self.action_proj(encoded_action) # (B, latent_dim)
         
-        # Pass through network
-        hidden = self.network(x_concat)
+        # Stack as sequence: [state, action]
+        x = torch.stack([state_proj, action_proj], dim=1)  # (B, 2, latent_dim)
         
-        # Get Gaussian parameters
-        mu = self.mu_head(hidden)
-        logvar = self.logvar_head(hidden)
+        # Add positional encoding
+        x = x + self.pos_embed  # (B, 2, latent_dim)
         
-        return mu, logvar
-    
-    def predict(self, x_t: torch.Tensor, e_t: torch.Tensor) -> torch.Tensor:
-        """
-        Predict next state embeddings deterministically (using mean of distribution).
+        # Pass through transformer
+        x = self.transformer(x)  # (B, 2, latent_dim)
         
-        This is the main method to use for training with state decoder reconstruction.
+        # Use the first token (state position) as the output
+        predicted_next_latent = self.output_proj(x[:, 0])  # (B, latent_dim)
         
-        Args:
-            x_t (torch.Tensor): Current state embeddings of shape (B, state_dim)
-            e_t (torch.Tensor): Action embeddings of shape (B, action_dim)
-            
-        Returns:
-            torch.Tensor: Predicted next state embeddings x_{t+1} of shape (B, state_dim)
-                         Ready for state_decoder input - compatible with ARC_StateDecoder.forward(z).
-        """
-        mu, _ = self.forward(x_t, e_t)
-        return mu
-    
-    def sample(self, x_t: torch.Tensor, e_t: torch.Tensor) -> torch.Tensor:
-        """
-        Sample next state embeddings from the predicted distribution.
-        
-        Args:
-            x_t (torch.Tensor): Current state embeddings of shape (B, state_dim)
-            e_t (torch.Tensor): Action embeddings of shape (B, action_dim)
-            
-        Returns:
-            torch.Tensor: Sampled next state embeddings x_{t+1} of shape (B, state_dim)
-                         Ready for state_decoder input - compatible with ARC_StateDecoder.forward(z).
-        """
-        mu, logvar = self.forward(x_t, e_t)
-        
-        # Reparameterization trick: x = mu + eps * std
-        std = torch.exp(0.5 * logvar)
-        eps = torch.randn_like(std)
-        x_next = mu + eps * std
-        
-        return x_next
-    
-    def log_prob(self, x_t: torch.Tensor, e_t: torch.Tensor, x_next: torch.Tensor) -> torch.Tensor:
-        """
-        Compute log probability of next state under the predicted distribution.
-        Useful for computing negative log-likelihood loss (Eq. 5).
-        
-        Args:
-            x_t (torch.Tensor): Current state embeddings of shape (B, state_dim)
-            e_t (torch.Tensor): Action embeddings of shape (B, action_dim)
-            x_next (torch.Tensor): Next state embeddings of shape (B, state_dim)
-            
-        Returns:
-            torch.Tensor: Log probabilities of shape (B,)
-        """
-        mu, logvar = self.forward(x_t, e_t)
-        
-        # Compute log probability under multivariate Gaussian
-        # log N(x; mu, sigma^2) = -0.5 * (log(2π) + log(sigma^2) + (x-mu)^2/sigma^2)
-        var = torch.exp(logvar)
-        log_prob = -0.5 * (torch.log(2 * torch.pi * var) + (x_next - mu) ** 2 / var)
-        
-        # Sum over dimensions to get log probability for each sample
-        log_prob = log_prob.sum(dim=-1)
-        
-        return log_prob
-    
-    def nll_loss(self, x_t: torch.Tensor, e_t: torch.Tensor, x_next: torch.Tensor) -> torch.Tensor:
-        """
-        Compute negative log-likelihood loss (Eq. 5).
-        
-        Args:
-            x_t (torch.Tensor): Current state embeddings of shape (B, state_dim)
-            e_t (torch.Tensor): Action embeddings of shape (B, action_dim)
-            x_next (torch.Tensor): Next state embeddings of shape (B, state_dim)
-            
-        Returns:
-            torch.Tensor: Negative log-likelihood loss (scalar)
-        """
-        log_prob = self.log_prob(x_t, e_t, x_next)
-        return -log_prob.mean()
+        return predicted_next_latent

@@ -61,8 +61,8 @@ class WorldModelTrainer:
         self.setup_datasets()
         
         # Training metrics
-        self.train_metrics = {'transition_loss': [], 'action_loss': [], 'total_loss': [], 'state_reconstruction_loss': []}
-        self.val_metrics = {'transition_loss': [], 'action_loss': [], 'total_loss': [], 'state_reconstruction_loss': []}
+        self.train_metrics = {'transition_loss': [], 'action_loss': [], 'total_loss': []}
+        self.val_metrics = {'transition_loss': [], 'action_loss': [], 'total_loss': []}
         
     def setup_logging(self):
         """Setup logging configuration."""
@@ -101,7 +101,11 @@ class WorldModelTrainer:
         self.transition_model = ARC_TransitionModel(
             state_dim=model_config['latent_dim_state'],
             action_dim=model_config['latent_dim_action'],
-            hidden_dim=model_config.get('transition_hidden_dim', 256),
+            latent_dim=model_config['latent_dim_state'],  # Output same dimension as state
+            transformer_depth=model_config.get('transition_depth', 2),
+            transformer_heads=model_config.get('transition_heads', 4),
+            transformer_dim_head=model_config.get('transition_dim_head', 64),
+            transformer_mlp_dim=model_config.get('transition_mlp_dim', 256),
             dropout=model_config.get('dropout', 0.0)
         ).to(self.device)
         
@@ -194,15 +198,15 @@ class WorldModelTrainer:
         
         self.logger.info(f"Dataset split: {len(self.train_dataset)} train, {len(self.val_dataset)} val")
         
-    def compute_losses(self, batch: Dict[str, torch.Tensor]) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    def compute_losses(self, batch: Dict[str, torch.Tensor]) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """
-        Compute transition, action reconstruction, and state reconstruction losses.
+        Compute transition and action reconstruction losses.
         
         Args:
             batch: Dictionary containing batch data
             
         Returns:
-            Tuple of (total_loss, transition_loss, action_loss, state_reconstruction_loss)
+            Tuple of (total_loss, transition_loss, action_loss)
         """
         # Move batch to device
         for key in batch:
@@ -223,27 +227,13 @@ class WorldModelTrainer:
         e_t = self.action_encoder(batch['action'])
         
         # Predict next state embedding using transition model
-        x_next_pred = self.transition_model.predict(x_t, e_t)
+        x_next_pred = self.transition_model(x_t, e_t)
         
-        # Decode predicted next state
+        # Decode predicted next state to get logits
         decoded_next_state = self.state_decoder(x_next_pred)
         
-        # Compute state reconstruction loss
-        state_reconstruction_loss = self._compute_state_reconstruction_loss(
-            decoded_next_state, batch
-        )
-        
-        # Optional: Also compute transition loss in embedding space for comparison
-        # (can be disabled by setting weight to 0 in config)
-        x_next_true = self.state_encoder(
-            batch['next_state'],
-            batch['shape_h_next'],
-            batch['shape_w_next'],
-            batch['most_present_color_next'],
-            batch['least_present_color_next'],
-            batch['num_colors_grid_next']
-        )
-        embedding_transition_loss = self.transition_model.nll_loss(x_t, e_t, x_next_true)
+        # Compute transition loss as cross-entropy between decoded logits and actual next state
+        transition_loss = self._compute_transition_loss(decoded_next_state, batch)
         
         # Compute action reconstruction loss
         action_logits = self.action_decoder(e_t)
@@ -253,32 +243,27 @@ class WorldModelTrainer:
         else:  # MSE for continuous actions
             action_loss = F.mse_loss(action_logits, batch['action'].float())
         
-        # Combine losses with configurable weights
+        # Combine losses
         alpha = self.config['training']['action_loss_weight']
-        beta = self.config['training'].get('state_reconstruction_loss_weight', 1.0)
-        gamma = self.config['training'].get('embedding_transition_loss_weight', 0.1)
+        total_loss = transition_loss + alpha * action_loss
         
-        total_loss = (beta * state_reconstruction_loss + 
-                     alpha * action_loss + 
-                     gamma * embedding_transition_loss)
-        
-        return total_loss, embedding_transition_loss, action_loss, state_reconstruction_loss
+        return total_loss, transition_loss, action_loss
     
-    def _compute_state_reconstruction_loss(self, decoded_state: Dict[str, torch.Tensor], 
-                                         batch: Dict[str, torch.Tensor]) -> torch.Tensor:
+    def _compute_transition_loss(self, decoded_state: Dict[str, torch.Tensor], 
+                                batch: Dict[str, torch.Tensor]) -> torch.Tensor:
         """
-        Compute state reconstruction loss by comparing decoded state with true next state.
+        Compute transition loss as cross-entropy between decoded state logits and actual next state.
         
         Args:
             decoded_state: Dictionary of decoded state logits from state decoder
             batch: Batch data containing true next state
             
         Returns:
-            torch.Tensor: State reconstruction loss
+            torch.Tensor: Transition loss (cross-entropy)
         """
         total_loss = 0.0
         
-        # Grid reconstruction loss
+        # Grid reconstruction loss (main component)
         grid_logits = decoded_state['grid_logits']  # (B, H, W, vocab_size)
         true_grid = batch['next_state']  # (B, H, W) or (B, 1, H, W)
         
@@ -335,14 +320,14 @@ class WorldModelTrainer:
         self.action_decoder.train()
         self.state_decoder.train()
         
-        epoch_losses = {'transition_loss': [], 'action_loss': [], 'total_loss': [], 'state_reconstruction_loss': []}
+        epoch_losses = {'transition_loss': [], 'action_loss': [], 'total_loss': []}
         
         for batch_idx, batch in enumerate(self.train_loader):
             # Zero gradients
             self.optimizer.zero_grad()
             
             # Compute losses
-            total_loss, transition_loss, action_loss, state_reconstruction_loss = self.compute_losses(batch)
+            total_loss, transition_loss, action_loss = self.compute_losses(batch)
             
             # Backward pass
             total_loss.backward()
@@ -365,7 +350,6 @@ class WorldModelTrainer:
             epoch_losses['total_loss'].append(total_loss.item())
             epoch_losses['transition_loss'].append(transition_loss.item())
             epoch_losses['action_loss'].append(action_loss.item())
-            epoch_losses['state_reconstruction_loss'].append(state_reconstruction_loss.item())
             
             # Log progress
             if batch_idx % self.config['training'].get('log_interval', 100) == 0:
@@ -373,8 +357,7 @@ class WorldModelTrainer:
                     f'Epoch {epoch}, Batch {batch_idx}/{len(self.train_loader)}: '
                     f'Total Loss: {total_loss.item():.4f}, '
                     f'Transition Loss: {transition_loss.item():.4f}, '
-                    f'Action Loss: {action_loss.item():.4f}, '
-                    f'State Reconstruction Loss: {state_reconstruction_loss.item():.4f}'
+                    f'Action Loss: {action_loss.item():.4f}'
                 )
         
         # Compute average losses
@@ -402,18 +385,17 @@ class WorldModelTrainer:
         self.action_decoder.eval()
         self.state_decoder.eval()
         
-        epoch_losses = {'transition_loss': [], 'action_loss': [], 'total_loss': [], 'state_reconstruction_loss': []}
+        epoch_losses = {'transition_loss': [], 'action_loss': [], 'total_loss': []}
         
         with torch.no_grad():
             for batch in self.val_loader:
                 # Compute losses
-                total_loss, transition_loss, action_loss, state_reconstruction_loss = self.compute_losses(batch)
+                total_loss, transition_loss, action_loss = self.compute_losses(batch)
                 
                 # Store losses
                 epoch_losses['total_loss'].append(total_loss.item())
                 epoch_losses['transition_loss'].append(transition_loss.item())
                 epoch_losses['action_loss'].append(action_loss.item())
-                epoch_losses['state_reconstruction_loss'].append(state_reconstruction_loss.item())
         
         # Compute average losses
         avg_losses = {key: np.mean(values) for key, values in epoch_losses.items()}
@@ -422,8 +404,7 @@ class WorldModelTrainer:
             f'Validation Epoch {epoch}: '
             f'Total Loss: {avg_losses["total_loss"]:.4f}, '
             f'Transition Loss: {avg_losses["transition_loss"]:.4f}, '
-            f'Action Loss: {avg_losses["action_loss"]:.4f}, '
-            f'State Reconstruction Loss: {avg_losses["state_reconstruction_loss"]:.4f}'
+            f'Action Loss: {avg_losses["action_loss"]:.4f}'
         )
         
         return avg_losses
