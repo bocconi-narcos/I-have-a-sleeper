@@ -9,7 +9,7 @@ This script implements a complete training pipeline for a world model consisting
 - Action decoder f(e) → reconstruction of original action a
 
 Usage:
-    python train_generative_wm.py --config configs/train_config.yaml
+    python -m src.scripts.train_generative_wm --config configs/train_config.yaml
 """
 
 import torch
@@ -27,6 +27,7 @@ import numpy as np
 
 # Import the existing models
 from src.models.ARC_specific.ARC_state_encoder import ARC_StateEncoder
+from src.models.ARC_specific.ARC_state_decoder import ARC_StateDecoder
 from src.models.ARC_specific.ARC_action_encoder import ARC_ActionEncoder
 from src.models.ARC_specific.ARC_transition_model import ARC_TransitionModel
 from src.models.ARC_specific.ARC_action_decoder import ARC_ActionDecoder
@@ -40,7 +41,7 @@ class WorldModelTrainer:
     
     def __init__(self, config: Dict[str, Any]):
         self.config = config
-        self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        self.device = torch.device('mps' if torch.backends.mps.is_available() else 'cpu')
         print(f"Using device: {self.device}")
         
         # Create output directory
@@ -60,8 +61,8 @@ class WorldModelTrainer:
         self.setup_datasets()
         
         # Training metrics
-        self.train_metrics = {'transition_loss': [], 'action_loss': [], 'total_loss': []}
-        self.val_metrics = {'transition_loss': [], 'action_loss': [], 'total_loss': []}
+        self.train_metrics = {'transition_loss': [], 'action_loss': [], 'total_loss': [], 'state_reconstruction_loss': []}
+        self.val_metrics = {'transition_loss': [], 'action_loss': [], 'total_loss': [], 'state_reconstruction_loss': []}
         
     def setup_logging(self):
         """Setup logging configuration."""
@@ -112,11 +113,19 @@ class WorldModelTrainer:
             dropout=model_config.get('dropout', 0.0)
         ).to(self.device)
         
+        # State decoder (reconstructs states from latent embeddings)
+        self.state_decoder = ARC_StateDecoder(
+            image_size=model_config['image_size'],
+            latent_dim=model_config['latent_dim_state'],
+            decoder_params=model_config.get('decoder_params', {})
+        ).to(self.device)
+        
         # Log model parameters
         total_params = sum(p.numel() for p in self.state_encoder.parameters()) + \
                       sum(p.numel() for p in self.action_encoder.parameters()) + \
                       sum(p.numel() for p in self.transition_model.parameters()) + \
-                      sum(p.numel() for p in self.action_decoder.parameters())
+                      sum(p.numel() for p in self.action_decoder.parameters()) + \
+                      sum(p.numel() for p in self.state_decoder.parameters())
         self.logger.info(f"Total model parameters: {total_params:,}")
         
     def setup_optimizer(self):
@@ -125,7 +134,8 @@ class WorldModelTrainer:
         all_params = list(self.state_encoder.parameters()) + \
                     list(self.action_encoder.parameters()) + \
                     list(self.transition_model.parameters()) + \
-                    list(self.action_decoder.parameters())
+                    list(self.action_decoder.parameters()) + \
+                    list(self.state_decoder.parameters())
         
         # Create optimizer
         self.optimizer = torch.optim.AdamW(
@@ -171,7 +181,7 @@ class WorldModelTrainer:
             batch_size=self.config['training']['batch_size'],
             shuffle=True,
             num_workers=data_config.get('num_workers', 4),
-            pin_memory=True if self.device.type == 'cuda' else False
+            pin_memory=True if self.device.type == 'mps' else False
         )
         
         self.val_loader = DataLoader(
@@ -179,20 +189,20 @@ class WorldModelTrainer:
             batch_size=self.config['training']['batch_size'],
             shuffle=False,
             num_workers=data_config.get('num_workers', 4),
-            pin_memory=True if self.device.type == 'cuda' else False
+            pin_memory=True if self.device.type == 'mps' else False
         )
         
         self.logger.info(f"Dataset split: {len(self.train_dataset)} train, {len(self.val_dataset)} val")
         
-    def compute_losses(self, batch: Dict[str, torch.Tensor]) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    def compute_losses(self, batch: Dict[str, torch.Tensor]) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         """
-        Compute transition and action reconstruction losses.
+        Compute transition, action reconstruction, and state reconstruction losses.
         
         Args:
             batch: Dictionary containing batch data
             
         Returns:
-            Tuple of (total_loss, transition_loss, action_loss)
+            Tuple of (total_loss, transition_loss, action_loss, state_reconstruction_loss)
         """
         # Move batch to device
         for key in batch:
@@ -209,8 +219,23 @@ class WorldModelTrainer:
             batch['num_colors_grid']
         )
         
-        # Encode next state (target for transition model)
-        x_next = self.state_encoder(
+        # Encode actions
+        e_t = self.action_encoder(batch['action'])
+        
+        # Predict next state embedding using transition model
+        x_next_pred = self.transition_model.predict(x_t, e_t)
+        
+        # Decode predicted next state
+        decoded_next_state = self.state_decoder(x_next_pred)
+        
+        # Compute state reconstruction loss
+        state_reconstruction_loss = self._compute_state_reconstruction_loss(
+            decoded_next_state, batch
+        )
+        
+        # Optional: Also compute transition loss in embedding space for comparison
+        # (can be disabled by setting weight to 0 in config)
+        x_next_true = self.state_encoder(
             batch['next_state'],
             batch['shape_h_next'],
             batch['shape_w_next'],
@@ -218,12 +243,7 @@ class WorldModelTrainer:
             batch['least_present_color_next'],
             batch['num_colors_grid_next']
         )
-        
-        # Encode actions
-        e_t = self.action_encoder(batch['action'])
-        
-        # Compute transition loss
-        transition_loss = self.transition_model.nll_loss(x_t, e_t, x_next)
+        embedding_transition_loss = self.transition_model.nll_loss(x_t, e_t, x_next_true)
         
         # Compute action reconstruction loss
         action_logits = self.action_decoder(e_t)
@@ -233,11 +253,71 @@ class WorldModelTrainer:
         else:  # MSE for continuous actions
             action_loss = F.mse_loss(action_logits, batch['action'].float())
         
-        # Combine losses
+        # Combine losses with configurable weights
         alpha = self.config['training']['action_loss_weight']
-        total_loss = transition_loss + alpha * action_loss
+        beta = self.config['training'].get('state_reconstruction_loss_weight', 1.0)
+        gamma = self.config['training'].get('embedding_transition_loss_weight', 0.1)
         
-        return total_loss, transition_loss, action_loss
+        total_loss = (beta * state_reconstruction_loss + 
+                     alpha * action_loss + 
+                     gamma * embedding_transition_loss)
+        
+        return total_loss, embedding_transition_loss, action_loss, state_reconstruction_loss
+    
+    def _compute_state_reconstruction_loss(self, decoded_state: Dict[str, torch.Tensor], 
+                                         batch: Dict[str, torch.Tensor]) -> torch.Tensor:
+        """
+        Compute state reconstruction loss by comparing decoded state with true next state.
+        
+        Args:
+            decoded_state: Dictionary of decoded state logits from state decoder
+            batch: Batch data containing true next state
+            
+        Returns:
+            torch.Tensor: State reconstruction loss
+        """
+        total_loss = 0.0
+        
+        # Grid reconstruction loss
+        grid_logits = decoded_state['grid_logits']  # (B, H, W, vocab_size)
+        true_grid = batch['next_state']  # (B, H, W) or (B, 1, H, W)
+        
+        # Handle potential channel dimension
+        if true_grid.dim() == 4 and true_grid.shape[1] == 1:
+            true_grid = true_grid.squeeze(1)  # (B, H, W)
+        
+        # Flatten for cross-entropy
+        B, H, W = true_grid.shape
+        grid_logits_flat = grid_logits.view(B * H * W, -1)
+        true_grid_flat = true_grid.view(B * H * W)
+        
+        # Handle padding (-1 values) by masking
+        mask = true_grid_flat != -1
+        if mask.any():
+            grid_logits_masked = grid_logits_flat[mask]
+            true_grid_masked = true_grid_flat[mask] + 1  # Shift to match embedding shift
+            grid_loss = F.cross_entropy(grid_logits_masked, true_grid_masked)
+        else:
+            grid_loss = torch.tensor(0.0, device=self.device)
+        
+        total_loss += grid_loss
+        
+        # Shape reconstruction losses
+        shape_h_loss = F.cross_entropy(decoded_state['shape_h_logits'], batch['shape_h_next'] - 1)
+        shape_w_loss = F.cross_entropy(decoded_state['shape_w_logits'], batch['shape_w_next'] - 1)
+        total_loss += shape_h_loss + shape_w_loss
+        
+        # Color statistics reconstruction losses
+        most_common_loss = F.cross_entropy(decoded_state['most_common_logits'], 
+                                          batch['most_present_color_next'])
+        least_common_loss = F.cross_entropy(decoded_state['least_common_logits'], 
+                                           batch['least_present_color_next'])
+        unique_count_loss = F.cross_entropy(decoded_state['unique_count_logits'], 
+                                           batch['num_colors_grid_next'])
+        
+        total_loss += most_common_loss + least_common_loss + unique_count_loss
+        
+        return total_loss
     
     def train_epoch(self, epoch: int) -> Dict[str, float]:
         """
@@ -253,15 +333,16 @@ class WorldModelTrainer:
         self.action_encoder.train()
         self.transition_model.train()
         self.action_decoder.train()
+        self.state_decoder.train()
         
-        epoch_losses = {'transition_loss': [], 'action_loss': [], 'total_loss': []}
+        epoch_losses = {'transition_loss': [], 'action_loss': [], 'total_loss': [], 'state_reconstruction_loss': []}
         
         for batch_idx, batch in enumerate(self.train_loader):
             # Zero gradients
             self.optimizer.zero_grad()
             
             # Compute losses
-            total_loss, transition_loss, action_loss = self.compute_losses(batch)
+            total_loss, transition_loss, action_loss, state_reconstruction_loss = self.compute_losses(batch)
             
             # Backward pass
             total_loss.backward()
@@ -272,7 +353,8 @@ class WorldModelTrainer:
                     list(self.state_encoder.parameters()) + \
                     list(self.action_encoder.parameters()) + \
                     list(self.transition_model.parameters()) + \
-                    list(self.action_decoder.parameters()),
+                    list(self.action_decoder.parameters()) + \
+                    list(self.state_decoder.parameters()),
                     self.config['training']['grad_clip']
                 )
             
@@ -283,6 +365,7 @@ class WorldModelTrainer:
             epoch_losses['total_loss'].append(total_loss.item())
             epoch_losses['transition_loss'].append(transition_loss.item())
             epoch_losses['action_loss'].append(action_loss.item())
+            epoch_losses['state_reconstruction_loss'].append(state_reconstruction_loss.item())
             
             # Log progress
             if batch_idx % self.config['training'].get('log_interval', 100) == 0:
@@ -290,7 +373,8 @@ class WorldModelTrainer:
                     f'Epoch {epoch}, Batch {batch_idx}/{len(self.train_loader)}: '
                     f'Total Loss: {total_loss.item():.4f}, '
                     f'Transition Loss: {transition_loss.item():.4f}, '
-                    f'Action Loss: {action_loss.item():.4f}'
+                    f'Action Loss: {action_loss.item():.4f}, '
+                    f'State Reconstruction Loss: {state_reconstruction_loss.item():.4f}'
                 )
         
         # Compute average losses
@@ -316,18 +400,20 @@ class WorldModelTrainer:
         self.action_encoder.eval()
         self.transition_model.eval()
         self.action_decoder.eval()
+        self.state_decoder.eval()
         
-        epoch_losses = {'transition_loss': [], 'action_loss': [], 'total_loss': []}
+        epoch_losses = {'transition_loss': [], 'action_loss': [], 'total_loss': [], 'state_reconstruction_loss': []}
         
         with torch.no_grad():
             for batch in self.val_loader:
                 # Compute losses
-                total_loss, transition_loss, action_loss = self.compute_losses(batch)
+                total_loss, transition_loss, action_loss, state_reconstruction_loss = self.compute_losses(batch)
                 
                 # Store losses
                 epoch_losses['total_loss'].append(total_loss.item())
                 epoch_losses['transition_loss'].append(transition_loss.item())
                 epoch_losses['action_loss'].append(action_loss.item())
+                epoch_losses['state_reconstruction_loss'].append(state_reconstruction_loss.item())
         
         # Compute average losses
         avg_losses = {key: np.mean(values) for key, values in epoch_losses.items()}
@@ -336,7 +422,8 @@ class WorldModelTrainer:
             f'Validation Epoch {epoch}: '
             f'Total Loss: {avg_losses["total_loss"]:.4f}, '
             f'Transition Loss: {avg_losses["transition_loss"]:.4f}, '
-            f'Action Loss: {avg_losses["action_loss"]:.4f}'
+            f'Action Loss: {avg_losses["action_loss"]:.4f}, '
+            f'State Reconstruction Loss: {avg_losses["state_reconstruction_loss"]:.4f}'
         )
         
         return avg_losses
@@ -355,6 +442,7 @@ class WorldModelTrainer:
             'action_encoder_state_dict': self.action_encoder.state_dict(),
             'transition_model_state_dict': self.transition_model.state_dict(),
             'action_decoder_state_dict': self.action_decoder.state_dict(),
+            'state_decoder_state_dict': self.state_decoder.state_dict(),
             'optimizer_state_dict': self.optimizer.state_dict(),
             'config': self.config,
             'train_metrics': self.train_metrics,
@@ -449,6 +537,7 @@ def main():
         trainer.action_encoder.load_state_dict(checkpoint['action_encoder_state_dict'])
         trainer.transition_model.load_state_dict(checkpoint['transition_model_state_dict'])
         trainer.action_decoder.load_state_dict(checkpoint['action_decoder_state_dict'])
+        trainer.state_decoder.load_state_dict(checkpoint['state_decoder_state_dict'])
         trainer.optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
         if trainer.scheduler is not None and 'scheduler_state_dict' in checkpoint:
             trainer.scheduler.load_state_dict(checkpoint['scheduler_state_dict'])

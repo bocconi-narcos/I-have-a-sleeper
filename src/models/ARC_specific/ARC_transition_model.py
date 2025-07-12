@@ -12,6 +12,9 @@ class ARC_TransitionModel(nn.Module):
     Predicts the distribution over next state embeddings x_{t+1} given (x_t, e_t),
     approximating P(s_{t+1} | s_t, a_t) ≈ T(x_t, e_t).
     
+    For training, use predict() method to get deterministic predictions that can be 
+    fed to the state decoder for reconstruction loss.
+    
     Args:
         state_dim (int): Dimension of state embeddings x_t (should match latent_dim from StateEncoder/StateDecoder)
         action_dim (int): Dimension of action embeddings e_t (should match embedding_dim from ActionEncoder)
@@ -88,6 +91,23 @@ class ARC_TransitionModel(nn.Module):
         logvar = self.logvar_head(hidden)
         
         return mu, logvar
+    
+    def predict(self, x_t: torch.Tensor, e_t: torch.Tensor) -> torch.Tensor:
+        """
+        Predict next state embeddings deterministically (using mean of distribution).
+        
+        This is the main method to use for training with state decoder reconstruction.
+        
+        Args:
+            x_t (torch.Tensor): Current state embeddings of shape (B, state_dim)
+            e_t (torch.Tensor): Action embeddings of shape (B, action_dim)
+            
+        Returns:
+            torch.Tensor: Predicted next state embeddings x_{t+1} of shape (B, state_dim)
+                         Ready for state_decoder input - compatible with ARC_StateDecoder.forward(z).
+        """
+        mu, _ = self.forward(x_t, e_t)
+        return mu
     
     def sample(self, x_t: torch.Tensor, e_t: torch.Tensor) -> torch.Tensor:
         """

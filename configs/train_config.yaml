@@ -14,7 +14,7 @@ model:
   latent_dim_action: 64   # Dimension of action embeddings (e)
   
   # Number of discrete actions
-  num_actions: 8  # Adjust based on your action space
+  num_actions: 2484  # Adjust based on your action space
   
   # Model architecture parameters
   action_encoder_type: "embedding"  # "embedding" or "onehot_mlp"
@@ -33,10 +33,19 @@ model:
     colors_vocab_size: 11 # Number of colors in ARC (0-10)
     scaled_position_embeddings: false
 
+  # State decoder specific parameters
+  decoder_params:
+    depth: 4              # Number of transformer layers
+    heads: 8              # Number of attention heads
+    mlp_dim: 512          # MLP dimension in transformer
+    transformer_dim: 64   # Transformer embedding dimension
+    dropout: 0.2
+    colors_vocab_size: 11 # Number of colors in ARC (0-10)
+
 # Data configuration
 data:
   # Path to replay buffer file
-  buffer_path: "data/replay_buffer.pt"  # Change to your actual data path
+  buffer_path: "data/rb_challenge_joint_1000010_default.pt"  # Change to your actual data path
   
   # Data format parameters
   state_shape: [1, 30, 30]  # Shape of state tensors (C, H, W)
@@ -54,12 +63,14 @@ training:
   # Training hyperparameters
   batch_size: 32
   num_epochs: 100
-  learning_rate: 1e-4
-  weight_decay: 1e-4
+  learning_rate: 0.0001
+  weight_decay: 0.0001
   
   # Loss configuration
   loss_type: "categorical"      # "categorical" or "mse"
   action_loss_weight: 1.0       # Alpha weight for action reconstruction loss
+  state_reconstruction_loss_weight: 1.0  # Beta weight for state reconstruction loss
+  embedding_transition_loss_weight: 0.1  # Gamma weight for embedding transition loss
   
   # Regularization
   grad_clip: 1.0  # Gradient clipping threshold (0 to disable)
@@ -88,17 +99,24 @@ training:
 #     mlp_dim: 1024
 #     transformer_dim: 128
 
-# # Configuration for faster training (smaller models)
-# model_fast:
-#   latent_dim_state: 64
-#   latent_dim_action: 32
-#   transition_hidden_dim: 128
-#   action_decoder_hidden_dims: [256]
-#   encoder_params:
-#     depth: 2
-#     heads: 4
-#     mlp_dim: 256
-#     transformer_dim: 32
+# Configuration for faster training (smaller models)
+model_fast:
+  latent_dim_state: 64
+  latent_dim_action: 32
+  transition_hidden_dim: 128
+  action_decoder_hidden_dims: [256]
+  encoder_params:
+    depth: 2
+    heads: 4
+    mlp_dim: 256
+    transformer_dim: 32
+  decoder_params:
+    depth: 2
+    heads: 4
+    mlp_dim: 256
+    transformer_dim: 32
+    dropout: 0.2
+    colors_vocab_size: 11
 
 # # Configuration for continuous actions
 # training_continuous:
