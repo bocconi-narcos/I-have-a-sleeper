@@ -37,7 +37,7 @@ class PreNormTransformerBlock(nn.Module):
         x = x + self.dropout2(mlp_out)
         return x
 
-class StateEncoder(nn.Module):
+class ARC_StateEncoder(nn.Module):
     def __init__(self,
                  image_size,            # int or tuple (H, W)
                  input_channels: int,

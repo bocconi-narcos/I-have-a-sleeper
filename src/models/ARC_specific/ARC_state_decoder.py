@@ -56,7 +56,7 @@ class PreNormTransformerBlock(nn.Module):
         x = x + self.dropout2(mlp_out)
         return x
 
-class StateDecoder(nn.Module):
+class ARC_StateDecoder(nn.Module):
     """
     The StateDecoder model is a transformer-based decoder that reconstructs the state 
     (grid and metadata) from a latent vector.
