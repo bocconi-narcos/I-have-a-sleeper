@@ -7,3 +7,5 @@ numpy>=1.21.0
 h5py>=3.7.0
 PyYAML>=6.0 
 einops
+wandb
+tqdm

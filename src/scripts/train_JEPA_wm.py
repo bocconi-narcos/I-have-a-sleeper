@@ -175,10 +175,11 @@ def train_jepa_world_model():
     for param in target_encoder.parameters():
         param.requires_grad = False
     
+    # Action encoder (g) - Use embedding approach for JSAE
     action_encoder = ARC_ActionEncoder(
         num_actions=model_config['num_actions'],
         embedding_dim=model_config['latent_dim_action'],
-        encoder_type=model_config.get('action_encoder_type', 'embedding')
+        encoder_type='embedding'  # Force embedding approach for JSAE
     ).to(device)
     
     transition_model = ARC_TransitionModel(
@@ -197,6 +198,11 @@ def train_jepa_world_model():
                    sum(p.numel() for p in action_encoder.parameters()) + \
                    sum(p.numel() for p in transition_model.parameters())
     print(f"Total trainable parameters: {total_params:,}")
+    
+    # Log JSAE configuration
+    print("Using JSAE approach:")
+    print(f"  Action encoder: Embedding table ({model_config['num_actions']} actions -> {model_config['latent_dim_action']}D)")
+    print(f"  Note: JEPA uses no action decoder - loss computed on next state embeddings")
     
     # Initialize optimizer (only for trainable models, not target encoder)
     optimizer = optim.AdamW(

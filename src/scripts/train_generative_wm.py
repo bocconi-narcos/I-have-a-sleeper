@@ -90,11 +90,11 @@ class Generative_WorldModelTrainer:
             encoder_params=model_config.get('encoder_params', {})
         ).to(self.device)
         
-        # Action encoder (g)
+        # Action encoder (g) - Use embedding approach for JSAE
         self.action_encoder = ARC_ActionEncoder(
             num_actions=model_config['num_actions'],
             embedding_dim=model_config['latent_dim_action'],
-            encoder_type=model_config.get('action_encoder_type', 'embedding')
+            encoder_type='embedding'  # Force embedding approach for JSAE
         ).to(self.device)
         
         # Transition model (T)
@@ -109,12 +109,11 @@ class Generative_WorldModelTrainer:
             dropout=model_config.get('dropout', 0.0)
         ).to(self.device)
         
-        # Action decoder (f)
+        # Action decoder (f) - JSAE-style nearest-neighbor lookup
         self.action_decoder = ARC_ActionDecoder(
+            action_encoder=self.action_encoder,  # Pass the encoder for embedding lookup
             embedding_dim=model_config['latent_dim_action'],
-            num_actions=model_config['num_actions'],
-            hidden_dims=model_config.get('action_decoder_hidden_dims', [512]),
-            dropout=model_config.get('dropout', 0.0)
+            num_actions=model_config['num_actions']
         ).to(self.device)
         
         # State decoder (reconstructs states from latent embeddings)
@@ -131,6 +130,11 @@ class Generative_WorldModelTrainer:
                       sum(p.numel() for p in self.action_decoder.parameters()) + \
                       sum(p.numel() for p in self.state_decoder.parameters())
         self.logger.info(f"Total model parameters: {total_params:,}")
+        
+        # Log JSAE configuration
+        self.logger.info("Using JSAE approach:")
+        self.logger.info(f"  Action encoder: Embedding table ({model_config['num_actions']} actions -> {model_config['latent_dim_action']}D)")
+        self.logger.info(f"  Action decoder: Nearest-neighbor lookup")
         
     def setup_optimizer(self):
         """Initialize optimizer for all model parameters."""
@@ -235,13 +239,12 @@ class Generative_WorldModelTrainer:
         # Compute transition loss as cross-entropy between decoded logits and actual next state
         transition_loss = self._compute_transition_loss(decoded_next_state, batch)
         
-        # Compute action reconstruction loss
-        action_logits = self.action_decoder(e_t)
+        # Compute action reconstruction loss using JSAE approach
+        # Get action logits based on negative distances
+        action_logits = self.action_decoder.get_action_logits(e_t, temperature=1.0)
         
-        if self.config['training']['loss_type'] == 'categorical':
-            action_loss = F.cross_entropy(action_logits, batch['action'])
-        else:  # MSE for continuous actions
-            action_loss = F.mse_loss(action_logits, batch['action'].float())
+        # Use cross-entropy loss for discrete actions (JSAE approach)
+        action_loss = F.cross_entropy(action_logits, batch['action'])
         
         # Combine losses
         alpha = self.config['training']['action_loss_weight']
@@ -508,7 +511,7 @@ def main():
     config = load_config(args.config)
     
     # Create trainer
-    trainer = WorldModelTrainer(config)
+    trainer = Generative_WorldModelTrainer(config)
     
     # TODO: Add resume functionality if needed
     if args.resume:
