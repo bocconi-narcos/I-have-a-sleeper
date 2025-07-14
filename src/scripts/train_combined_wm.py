@@ -120,6 +120,7 @@ class CombinedWorldModelTrainer:
         
         # Generative state decoder
         self.gen_state_decoder = ARC_StateDecoder(
+            image_size=model_config['image_size'],
             latent_dim=model_config['latent_dim_state'],
             decoder_params=model_config.get('decoder_params', {})
         ).to(self.device)
@@ -133,10 +134,9 @@ class CombinedWorldModelTrainer:
         
         # Generative action decoder
         self.gen_action_decoder = ARC_ActionDecoder(
+            action_encoder=self.gen_action_encoder,
             embedding_dim=model_config['latent_dim_action'],
-            num_actions=model_config['num_actions'],
-            hidden_dims=model_config.get('action_decoder_hidden_dims', [512, 256]),
-            dropout=model_config.get('dropout', 0.1)
+            num_actions=model_config['num_actions']
         ).to(self.device)
         
         # Generative transition model
@@ -341,48 +341,57 @@ class CombinedWorldModelTrainer:
     def _compute_transition_loss(self, decoded_state: Dict[str, torch.Tensor], 
                                batch: Dict[str, torch.Tensor]) -> torch.Tensor:
         """
-        Compute transition loss between decoded next state and actual next state.
+        Compute transition loss as cross-entropy between decoded state logits and actual next state.
         
         Args:
-            decoded_state: Dictionary containing decoded state components
-            batch: Batch containing actual next state data
+            decoded_state: Dictionary of decoded state logits from state decoder
+            batch: Batch data containing true next state
             
         Returns:
-            Combined transition loss
+            torch.Tensor: Transition loss (cross-entropy)
         """
-        losses = []
+        total_loss = 0.0
         
-        # Grid reconstruction loss
-        if 'grid_logits' in decoded_state:
-            grid_loss = F.cross_entropy(
-                decoded_state['grid_logits'].view(-1, decoded_state['grid_logits'].size(-1)),
-                batch['next_state'].view(-1).long()
-            )
-            losses.append(grid_loss)
+        # Grid reconstruction loss (main component)
+        grid_logits = decoded_state['grid_logits']  # (B, H, W, vocab_size)
+        true_grid = batch['next_state']  # (B, H, W) or (B, 1, H, W)
         
-        # Shape losses
-        if 'shape_h_logits' in decoded_state:
-            shape_h_loss = F.cross_entropy(decoded_state['shape_h_logits'], batch['shape_h_next'].long())
-            losses.append(shape_h_loss * 0.1)  # Weight shape losses less
-            
-        if 'shape_w_logits' in decoded_state:
-            shape_w_loss = F.cross_entropy(decoded_state['shape_w_logits'], batch['shape_w_next'].long())
-            losses.append(shape_w_loss * 0.1)
+        # Handle potential channel dimension
+        if true_grid.dim() == 4 and true_grid.shape[1] == 1:
+            true_grid = true_grid.squeeze(1)  # (B, H, W)
         
-        # Color losses
-        if 'most_present_color_logits' in decoded_state:
-            most_color_loss = F.cross_entropy(decoded_state['most_present_color_logits'], batch['most_present_color_next'].long())
-            losses.append(most_color_loss * 0.1)
-            
-        if 'least_present_color_logits' in decoded_state:
-            least_color_loss = F.cross_entropy(decoded_state['least_present_color_logits'], batch['least_present_color_next'].long())
-            losses.append(least_color_loss * 0.1)
-            
-        if 'num_colors_grid_logits' in decoded_state:
-            num_colors_loss = F.cross_entropy(decoded_state['num_colors_grid_logits'], batch['num_colors_grid_next'].long())
-            losses.append(num_colors_loss * 0.1)
+        # Flatten for cross-entropy
+        B, H, W = true_grid.shape
+        grid_logits_flat = grid_logits.view(B * H * W, -1)
+        true_grid_flat = true_grid.view(B * H * W)
         
-        return sum(losses) if losses else torch.tensor(0.0, device=self.device)
+        # Handle padding (-1 values) by masking
+        mask = true_grid_flat != -1
+        if mask.any():
+            grid_logits_masked = grid_logits_flat[mask]
+            true_grid_masked = true_grid_flat[mask] + 1  # Shift to match embedding shift
+            grid_loss = F.cross_entropy(grid_logits_masked, true_grid_masked)
+        else:
+            grid_loss = torch.tensor(0.0, device=self.device)
+        
+        total_loss += grid_loss
+        
+        # Shape reconstruction losses
+        shape_h_loss = F.cross_entropy(decoded_state['shape_h_logits'], batch['shape_h_next'] - 1)
+        shape_w_loss = F.cross_entropy(decoded_state['shape_w_logits'], batch['shape_w_next'] - 1)
+        total_loss += shape_h_loss + shape_w_loss
+        
+        # Color statistics reconstruction losses
+        most_common_loss = F.cross_entropy(decoded_state['most_common_logits'], 
+                                          batch['most_present_color_next'])
+        least_common_loss = F.cross_entropy(decoded_state['least_common_logits'], 
+                                           batch['least_present_color_next'])
+        unique_count_loss = F.cross_entropy(decoded_state['unique_count_logits'], 
+                                           batch['num_colors_grid_next'])
+        
+        total_loss += most_common_loss + least_common_loss + unique_count_loss
+        
+        return total_loss
     
     def compute_jepa_losses(self, batch: Dict[str, torch.Tensor]) -> Tuple[torch.Tensor, torch.Tensor]:
         """
@@ -507,16 +516,7 @@ class CombinedWorldModelTrainer:
                 'JEPA Cos': f"{jepa_cosine_sim.item():.4f}"
             })
             
-            # Log progress
-            if batch_idx % self.config['training'].get('log_interval', 100) == 0:
-                self.logger.info(
-                    f'Epoch {epoch}, Batch {batch_idx}/{len(self.train_loader)}: '
-                    f'Gen Total: {gen_total_loss.item():.4f}, '
-                    f'Gen Trans: {gen_transition_loss.item():.4f}, '
-                    f'Gen Action: {gen_action_loss.item():.4f}, '
-                    f'JEPA Pred: {jepa_prediction_loss.item():.4f}, '
-                    f'JEPA Cos: {jepa_cosine_sim.item():.4f}'
-                )
+
         
         # Compute average losses
         avg_metrics = {
