@@ -2,7 +2,7 @@
 
 ## Overview
 
-The RewardPredictor system learns to predict scalar rewards from sequences of state embeddings representing current, next, and goal states. It uses a Transformer-based architecture with type embeddings and pooling (no CLS token).
+The RewardPredictor system trains **two separate models** to predict scalar rewards from sequences of state embeddings. One model uses a **generative encoder** and another uses a **JEPA encoder**, allowing comparison of different representation learning approaches. Both use Transformer-based architectures with type embeddings and pooling (no CLS token).
 
 ## Architecture
 
@@ -76,7 +76,12 @@ Key parameters in `configs/train_reward_config.yaml`:
 ```yaml
 model:
   latent_dim_state: 128          # State embedding dimension
-  freeze_state_encoder: true     # Whether to freeze state encoder
+  freeze_state_encoder: true     # Both encoders will be frozen
+  
+  # Dual encoder paths (both required)
+  generative_encoder_path: "outputs/world_model_training/best_model.pt"
+  jepa_encoder_path: "outputs/world_model_training/best_jepa_model.pt"
+  
   reward_predictor:
     n_heads: 8                   # Number of attention heads
     num_layers: 4                # Number of transformer layers
@@ -87,7 +92,7 @@ training:
   batch_size: 32
   learning_rate: 1e-4
   num_epochs: 100
-  patience: 10                   # Early stopping patience
+  patience: 10                   # Early stopping patience (per model)
 
 data:
   buffer_path: "data/rb_challenge_joint_1000010_default.pt"
@@ -95,6 +100,11 @@ data:
 ```
 
 ## Key Features
+
+### ✅ **Dual Model Training**
+- Simultaneous training of generative and JEPA-based reward predictors
+- Separate optimizers, schedulers, and checkpointing for each model
+- Independent early stopping for both models
 
 ### ✅ **Type Embeddings**
 - Automatic type identification for current/next/goal sequences
@@ -106,22 +116,27 @@ data:
 - Optional positional encoding
 
 ### ✅ **Training Pipeline**
-- Pre-trained state encoder integration
-- Comprehensive logging and checkpointing
-- Early stopping and learning rate scheduling
-- Optional Weights & Biases integration
+- Frozen pre-trained encoder integration (both generative and JEPA)
+- Comprehensive logging and checkpointing for both models
+- Independent early stopping and learning rate scheduling
+- Optional Weights & Biases integration with separate metrics
 
-### ✅ **Evaluation Tools**
-- Full dataset evaluation with multiple metrics
-- Visualization capabilities
-- Single transition inference
+### ✅ **Model Comparison**
+- Direct comparison between generative and JEPA representations
+- Separate best model saving: `best_reward_predictor_generative.pt` and `best_reward_pred_JEPA.pt`
+- Parallel validation metrics for performance analysis
 
 ## Expected Performance
 
-The model should learn to predict rewards by:
+Both models should learn to predict rewards by:
 1. Understanding state transitions (current → next)
 2. Measuring progress toward goals (next vs. goal)
 3. Capturing temporal relationships in sequences
+
+The comparison will reveal:
+- **Generative representations**: May capture more detailed state information
+- **JEPA representations**: May focus more on relevant dynamics and relationships
+- **Performance differences**: Which approach works better for reward prediction in ARC tasks
 
 ## Integration
 

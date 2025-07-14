@@ -9,11 +9,12 @@ model:
   input_channels: 1  # Single channel for color values
   latent_dim_state: 128  # Dimension of state embeddings
   
-  # Pre-trained state encoder path (optional)
-  # pretrained_state_encoder_path: "outputs/world_model_training/best_model.pt"
+  # Pre-trained encoder paths (both required for dual training)
+  generative_encoder_path: "outputs/world_model_training/best_model.pt"  # Generative world model encoder
+  jepa_encoder_path: "outputs/world_model_training/best_jepa_model.pt"   # JEPA world model encoder
   
-  # Whether to freeze the state encoder during training
-  freeze_state_encoder: true  # Usually true to use fixed embeddings
+  # Encoders are always frozen in this dual setup
+  freeze_state_encoder: true  # Both encoders will be frozen during training
   
   # State encoder parameters
   encoder_params:
