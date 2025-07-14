@@ -1,0 +1,74 @@
+# Reward Predictor Training Configuration
+# This config defines training parameters for the RewardPredictor model that learns
+# to predict rewards from current, next, and goal state embeddings
+
+# Model configuration
+model:
+  # State encoder parameters (for getting embeddings)
+  image_size: 30  # Max grid size in ARC tasks
+  input_channels: 1  # Single channel for color values
+  latent_dim_state: 128  # Dimension of state embeddings
+  
+  # Pre-trained state encoder path (optional)
+  # pretrained_state_encoder_path: "outputs/world_model_training/best_model.pt"
+  
+  # Whether to freeze the state encoder during training
+  freeze_state_encoder: true  # Usually true to use fixed embeddings
+  
+  # State encoder parameters
+  encoder_params:
+    depth: 4  # Number of transformer layers
+    heads: 8  # Number of attention heads
+    mlp_dim: 512  # MLP dimension in transformer
+    transformer_dim: 64  # Transformer embedding dimension
+    dropout: 0.2  # Dropout rate
+    emb_dropout: 0.2  # Embedding dropout rate
+    scaled_position_embeddings: false
+    colors_vocab_size: 11  # Number of colors in ARC (0-10)
+  
+  # Reward predictor specific parameters
+  reward_predictor:
+    n_heads: 8  # Number of attention heads in reward predictor
+    num_layers: 4  # Number of transformer layers
+    dim_ff: 512  # Feed-forward dimension
+    dropout: 0.1  # Dropout rate
+    use_positional_encoding: true  # Whether to use positional encoding
+    pooling_method: "mean"  # Pooling method: "mean" or "max"
+
+# Data configuration
+data:
+  buffer_path: "data/rb_challenge_joint_1000010_default.pt"  # Path to replay buffer
+  state_shape: [1, 30, 30]  # Shape of state tensors (C, H, W)
+  mode: "color_only"  # Training mode
+  num_samples: null  # Number of samples to use (null = all)
+  num_workers: 4  # Number of data loader workers
+
+# Training configuration
+training:
+  batch_size: 32  # Batch size for training
+  num_epochs: 100  # Maximum number of epochs
+  learning_rate: 1e-4  # Initial learning rate
+  weight_decay: 1e-4  # Weight decay for regularization
+  
+  # Learning rate scheduling
+  use_scheduler: true  # Whether to use LR scheduler
+  lr_factor: 0.5  # Factor to reduce LR by
+  lr_patience: 5  # Epochs to wait before reducing LR
+  
+  # Gradient clipping
+  grad_clip: 1.0  # Max gradient norm (0 = no clipping)
+  
+  # Validation and early stopping
+  val_ratio: 0.2  # Fraction of data for validation
+  patience: 10  # Early stopping patience
+  
+  # Checkpointing
+  save_interval: 5  # Save checkpoint every N epochs
+  
+  # Wandb logging (optional)
+  use_wandb: false  # Whether to use Weights & Biases logging
+  wandb_project: "reward-predictor-training"  # Wandb project name
+  wandb_run_name: null  # Wandb run name (null = auto-generated)
+
+# Output configuration
+output_dir: "outputs/reward_predictor_training"  # Directory to save models and logs 
