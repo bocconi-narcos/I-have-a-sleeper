@@ -208,3 +208,9 @@ __marimo__/
 
 # Wandb
 wandb/
+
+configs/
+
+data/
+
+outputs/
