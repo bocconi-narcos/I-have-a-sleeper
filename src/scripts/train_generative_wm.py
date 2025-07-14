@@ -188,16 +188,14 @@ class Generative_WorldModelTrainer:
             self.train_dataset,
             batch_size=self.config['training']['batch_size'],
             shuffle=True,
-            num_workers=data_config.get('num_workers', 4),
-            pin_memory=True if self.device.type == 'mps' else False
+            num_workers=data_config.get('num_workers', 4)
         )
         
         self.val_loader = DataLoader(
             self.val_dataset,
             batch_size=self.config['training']['batch_size'],
             shuffle=False,
-            num_workers=data_config.get('num_workers', 4),
-            pin_memory=True if self.device.type == 'mps' else False
+            num_workers=data_config.get('num_workers', 4)
         )
         
         self.logger.info(f"Dataset split: {len(self.train_dataset)} train, {len(self.val_dataset)} val")
