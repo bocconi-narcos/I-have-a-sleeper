@@ -1,0 +1,104 @@
+# Combined Generative and JEPA World Model Training Configuration
+
+# Output directory for checkpoints and logs
+output_dir: "outputs/combined_world_model_training"
+
+# Model configuration
+model:
+  # Grid/image dimensions
+  image_size: [30, 30]  # Maximum grid size (H, W)
+  input_channels: 1     # Number of input channels (1 for ARC grids)
+  
+  # Latent dimensions
+  latent_dim_state: 128   # Dimension of state embeddings (x)
+  latent_dim_action: 64   # Dimension of action embeddings (e)
+  
+  # Number of discrete actions
+  num_actions: 2484  # Adjust based on your action space
+  
+  # Model architecture parameters
+  action_encoder_type: "embedding"  # "embedding" or "onehot_mlp"
+  action_decoder_hidden_dims: [512, 256]
+  dropout: 0.1
+  
+  # Transition model (transformer) parameters
+  transition_depth: 2           # Number of transformer layers
+  transition_heads: 4           # Number of attention heads  
+  transition_dim_head: 64       # Dimension per attention head
+  transition_mlp_dim: 256       # MLP dimension in transformer
+  
+  # State encoder specific parameters
+  encoder_params:
+    depth: 4              # Number of transformer layers
+    heads: 8              # Number of attention heads
+    mlp_dim: 512          # MLP dimension in transformer
+    transformer_dim: 64   # Transformer embedding dimension
+    dropout: 0.2
+    emb_dropout: 0.1
+    colors_vocab_size: 11 # Number of colors in ARC (0-10)
+    scaled_position_embeddings: false
+
+  # State decoder specific parameters (only for generative model)
+  decoder_params:
+    depth: 4              # Number of transformer layers
+    heads: 8              # Number of attention heads
+    mlp_dim: 512          # MLP dimension in transformer
+    transformer_dim: 64   # Transformer embedding dimension
+    dropout: 0.2
+    colors_vocab_size: 11 # Number of colors in ARC (0-10)
+
+# Data configuration
+data:
+  buffer_path: "data/rb_challenge_joint_1000010_default.pt"
+  state_shape: [30, 30]    # Shape of state grids
+  mode: "color_only"       # "color_only" or "full"
+  train_split: 0.8         # Fraction of data for training
+  num_samples: null        # Number of samples to use (null for all)
+  num_workers: 4           # Number of data loading workers
+
+# Training configuration
+training:
+  # Basic hyperparameters
+  batch_size: 32
+  num_epochs: 100
+  learning_rate: 0.0001
+  weight_decay: 0.0001
+  
+  # Loss weights for generative model
+  action_loss_weight: 0.1  # Weight for action reconstruction loss (alpha)
+  
+  # EMA parameters for JEPA
+  ema_decay: 0.995         # EMA decay rate for target encoder
+  
+  # Regularization
+  grad_clip: 1.0           # Gradient clipping norm (0 to disable)
+  dropout: 0.1
+  
+  # Learning rate scheduling
+  use_scheduler: false     # Whether to use learning rate scheduler
+  scheduler_step_size: 10  # Step size for StepLR scheduler
+  scheduler_gamma: 0.1     # Gamma for StepLR scheduler
+  
+  # Early stopping
+  patience: 15             # Number of epochs to wait for improvement
+  
+  # Logging and saving
+  log_interval: 50         # How often to log training progress (in batches)
+  save_interval: 5         # How often to save checkpoints (in epochs)
+  
+  # Weights & Biases integration
+  use_wandb: true
+  wandb_project: "combined-world-model"
+  wandb_run_name: null     # Auto-generate if null
+
+# Evaluation configuration
+evaluation:
+  eval_interval: 5         # How often to run detailed evaluation (in epochs)
+  
+# Hardware configuration
+hardware:
+  device: "auto"           # "auto", "cpu", "cuda", "mps"
+  mixed_precision: false   # Whether to use mixed precision training
+  
+# Reproducibility
+seed: 42                   # Random seed for reproducibility 
